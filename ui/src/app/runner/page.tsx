@@ -6,6 +6,9 @@ import ResponseViewer from '@/components/ResponseViewer';
 import { runRequest } from '@/lib/request';
 import { hubspotPresets } from '@/presets/hubspot';
 import { buildN8nHttpRequestNode } from '@/lib/n8n';
+import { mapExternalToHubspot, type MappingRule } from '@/lib/mapping';
+import { planUpsertContactByEmail, executeUpsertContactByEmail, type UpsertPlan } from '@/lib/hubspot';
+import { buildDataset, type BuiltDataset } from '@/lib/dataset';
 
 const DEFAULT_PROFILE: ApiProfile = {
   name: 'New Request',
@@ -30,6 +33,35 @@ export default function RunnerPage() {
   });
   const [response, setResponse] = useState<ProxyResponse | undefined>(undefined);
   const [loading, setLoading] = useState(false);
+  const [dryRun, setDryRun] = useState(true);
+
+  // Upsert simulator state
+  const [externalJson, setExternalJson] = useState<string>('');
+  const [emailPath, setEmailPath] = useState<string>('email');
+  const [firstNamePath, setFirstNamePath] = useState<string>('firstName');
+  const [lastNamePath, setLastNamePath] = useState<string>('lastName');
+  const [extIdPath, setExtIdPath] = useState<string>('id');
+  const [upsertPlan, setUpsertPlan] = useState<UpsertPlan | undefined>(undefined);
+
+  // Dataset builder state
+  const [arrayPath, setArrayPath] = useState<string>('results');
+  const [maxItems, setMaxItems] = useState<number>(10);
+  const [useDetail, setUseDetail] = useState<boolean>(false);
+  const [detailPath, setDetailPath] = useState<string>('');
+  const [detailMethod, setDetailMethod] = useState<ApiProfile['method']>('GET');
+  const [detailIdPath, setDetailIdPath] = useState<string>('id');
+  const [detailIdVar, setDetailIdVar] = useState<string>('ID');
+  const [dataset, setDataset] = useState<BuiltDataset | undefined>(undefined);
+  const [datasetName, setDatasetName] = useState<string>('my_dataset');
+  const [savedDatasets, setSavedDatasets] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const all = JSON.parse(window.localStorage.getItem('datasets') || '{}');
+      return Object.keys(all);
+    } catch {
+      return [];
+    }
+  });
 
   const presets = useMemo(() => hubspotPresets, []);
 
@@ -76,11 +108,97 @@ export default function RunnerPage() {
     URL.revokeObjectURL(url);
   }, [profile]);
 
+  const planUpsert = useCallback(async () => {
+    try {
+      const ext = JSON.parse(externalJson || '{}');
+      const rules: MappingRule[] = [
+        { from: emailPath, to: 'email' },
+        { from: firstNamePath, to: 'firstname' },
+        { from: lastNamePath, to: 'lastname' },
+      ];
+      if (extIdPath) rules.push({ from: extIdPath, to: 'ext_id' });
+      const properties = mapExternalToHubspot(rules, ext);
+      const base: ApiProfile = { ...profile, method: 'POST', path: '' };
+      const plan = await planUpsertContactByEmail(base, properties);
+      setUpsertPlan(plan);
+    } catch (e) {
+      alert('Invalid external JSON');
+    }
+  }, [externalJson, emailPath, firstNamePath, lastNamePath, extIdPath, profile]);
+
+  const executeUpsert = useCallback(async () => {
+    if (!upsertPlan) return;
+    const base: ApiProfile = { ...profile, method: 'POST', path: '' };
+    setLoading(true);
+    try {
+      const res = await executeUpsertContactByEmail(base, upsertPlan, dryRun);
+      setResponse(res);
+    } finally {
+      setLoading(false);
+    }
+  }, [upsertPlan, profile, dryRun]);
+
+  // Dataset builder actions
+  const buildDatasetAction = useCallback(async () => {
+    const listProfile = profile; // reuse current profile as list request
+    const detail = useDetail
+      ? {
+          ...listProfile,
+          method: detailMethod,
+          path: detailPath,
+        }
+      : undefined;
+    try {
+      const ds = await buildDataset(listProfile, arrayPath, {
+        maxItems,
+        detailProfile: detail,
+        idPath: detailIdPath,
+        idVarName: detailIdVar,
+      });
+      setDataset(ds);
+    } catch (e: any) {
+      alert(e?.message || 'Failed to build dataset');
+    }
+  }, [profile, arrayPath, maxItems, useDetail, detailPath, detailMethod, detailIdPath, detailIdVar]);
+
+  const saveDataset = useCallback(() => {
+    if (!dataset) return;
+    try {
+      const key = 'datasets';
+      const all = JSON.parse(window.localStorage.getItem(key) || '{}');
+      all[datasetName] = dataset;
+      window.localStorage.setItem(key, JSON.stringify(all));
+      setSavedDatasets(Object.keys(all));
+    } catch {
+      alert('Failed to save dataset');
+    }
+  }, [dataset, datasetName]);
+
+  const loadDataset = useCallback((name: string) => {
+    try {
+      const all = JSON.parse(window.localStorage.getItem('datasets') || '{}');
+      if (all[name]) setDataset(all[name]);
+    } catch {
+      /* noop */
+    }
+  }, []);
+
+  const injectRowToUpsert = useCallback((idx: number) => {
+    if (!dataset) return;
+    const row = dataset.rows[idx];
+    setExternalJson(JSON.stringify(row, null, 2));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [dataset]);
+
   return (
     <main className="max-w-6xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">API Runner</h1>
         <div className="flex items-center gap-2">
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
+            Dry Run
+          </label>
           <button className="btn" onClick={exportN8n}>Als n8n Node exportieren</button>
           <button className="btn-primary" onClick={execute} disabled={loading}>{loading ? 'Läuft…' : 'Request ausführen'}</button>
         </div>
@@ -95,9 +213,80 @@ export default function RunnerPage() {
             presets={presets}
             onApplyPreset={onApplyPreset}
           />
+
+          <div className="mt-6 p-4 border rounded space-y-3">
+            <div className="font-medium">Dataset Builder (Generic)</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <input className="input" placeholder="Array path in list response (e.g. results or data.items)" value={arrayPath} onChange={(e) => setArrayPath(e.target.value)} />
+              <input className="input" type="number" min={1} max={1000} placeholder="Max items" value={maxItems} onChange={(e) => setMaxItems(parseInt(e.target.value || '0') || 0)} />
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={useDetail} onChange={(e) => setUseDetail(e.target.checked)} />
+              Fetch per-item detail
+            </label>
+            {useDetail && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <input className="input" placeholder="Detail path template (e.g. /v1/users/{ID})" value={detailPath} onChange={(e) => setDetailPath(e.target.value)} />
+                <select className="input" value={detailMethod} onChange={(e) => setDetailMethod(e.target.value as any)}>
+                  {['GET','POST','PUT','PATCH','DELETE','HEAD'].map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+                <input className="input" placeholder="ID path in list item (e.g. id or user.id)" value={detailIdPath} onChange={(e) => setDetailIdPath(e.target.value)} />
+                <input className="input" placeholder="ID var name in template (default ID)" value={detailIdVar} onChange={(e) => setDetailIdVar(e.target.value)} />
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button className="btn" onClick={buildDatasetAction}>Build Dataset</button>
+              <input className="input flex-1" placeholder="Dataset name" value={datasetName} onChange={(e) => setDatasetName(e.target.value)} />
+              <button className="btn" onClick={saveDataset} disabled={!dataset}>Save</button>
+              <select className="input" onChange={(e) => e.target.value && loadDataset(e.target.value)}>
+                <option value="">Load…</option>
+                {savedDatasets.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            {dataset && (
+              <div className="text-sm text-gray-600">Rows: {dataset.rows.length}</div>
+            )}
+            {dataset && (
+              <div className="border rounded">
+                <div className="p-2 border-b text-sm bg-gray-50">Dataset Preview</div>
+                <div className="p-2 space-y-2">
+                  {dataset.rows.slice(0, 5).map((r, i) => (
+                    <div key={i} className="border rounded p-2">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-xs text-gray-500">Row {i}</div>
+                        <button className="btn" onClick={() => injectRowToUpsert(i)}>Use in Upsert</button>
+                      </div>
+                      <pre className="text-xs whitespace-pre-wrap">{JSON.stringify(r, null, 2)}</pre>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="mt-6 p-4 border rounded space-y-3">
+            <div className="font-medium">HubSpot Upsert Simulator (Contact by Email)</div>
+            <textarea className="input min-h-[120px] font-mono" placeholder='{"email":"a@b.com","firstName":"Ada","lastName":"Lovelace","id":"ext-1"}' value={externalJson} onChange={(e) => setExternalJson(e.target.value)} />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <input className="input" placeholder="Path to email (e.g. email)" value={emailPath} onChange={(e) => setEmailPath(e.target.value)} />
+              <input className="input" placeholder="Path to first name (e.g. firstName)" value={firstNamePath} onChange={(e) => setFirstNamePath(e.target.value)} />
+              <input className="input" placeholder="Path to last name (e.g. lastName)" value={lastNamePath} onChange={(e) => setLastNamePath(e.target.value)} />
+              <input className="input" placeholder="Path to external id (optional, e.g. id)" value={extIdPath} onChange={(e) => setExtIdPath(e.target.value)} />
+            </div>
+            <div className="flex gap-2">
+              <button className="btn" onClick={planUpsert}>Plan Upsert</button>
+              <button className="btn-primary" onClick={executeUpsert} disabled={!upsertPlan || loading}>{loading ? 'Läuft…' : 'Execute Upsert'}</button>
+            </div>
+          </div>
         </div>
         <div>
           <ResponseViewer response={response} />
+          {upsertPlan && (
+            <div className="mt-4 border rounded">
+              <div className="p-2 border-b text-sm bg-gray-50">Upsert Plan</div>
+              <pre className="p-3 text-sm whitespace-pre-wrap">{JSON.stringify(upsertPlan, null, 2)}</pre>
+            </div>
+          )}
         </div>
       </section>
     </main>

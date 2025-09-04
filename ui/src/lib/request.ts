@@ -10,6 +10,28 @@ export function buildUrl(baseUrl: string, path: string, query: Record<string, st
   return url.toString();
 }
 
+export function buildProxyPayload(profile: ApiProfile): ProxyRequest {
+  const { headers, query } = applyAuth(profile);
+  const url = buildUrl(profile.baseUrl, profile.path, query);
+  return {
+    url,
+    method: profile.method,
+    headers,
+    body: profile.body,
+  };
+}
+
+export async function runProxy(payload: ProxyRequest): Promise<ProxyResponse> {
+  const started = Date.now();
+  const res = await fetch('/api/proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const json = (await res.json()) as ProxyResponse;
+  return { ...json, durationMs: json.durationMs ?? Date.now() - started };
+}
+
 export function applyAuth(profile: ApiProfile): { headers: Record<string, string>; query: Record<string, string> } {
   const headers: Record<string, string> = { ...(profile.headers || {}) };
   const query: Record<string, string> = { ...(profile.query || {}) };
@@ -37,22 +59,6 @@ export function applyAuth(profile: ApiProfile): { headers: Record<string, string
 }
 
 export async function runRequest(profile: ApiProfile): Promise<ProxyResponse> {
-  const { headers, query } = applyAuth(profile);
-  const url = buildUrl(profile.baseUrl, profile.path, query);
-
-  const payload: ProxyRequest = {
-    url,
-    method: profile.method,
-    headers,
-    body: profile.body,
-  };
-
-  const started = Date.now();
-  const res = await fetch('/api/proxy', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const json = (await res.json()) as ProxyResponse;
-  return { ...json, durationMs: json.durationMs ?? Date.now() - started };
+  const payload = buildProxyPayload(profile);
+  return runProxy(payload);
 }
