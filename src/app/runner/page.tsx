@@ -6,8 +6,6 @@ import ResponseViewer from '@/components/ResponseViewer';
 import { runRequest } from '@/lib/request';
 import { hubspotPresets } from '@/presets/hubspot';
 import { buildN8nHttpRequestNode } from '@/lib/n8n';
-import { mapExternalToHubspot, type MappingRule } from '@/lib/mapping';
-import { planUpsertContactByEmail, executeUpsertContactByEmail, type UpsertPlan } from '@/lib/hubspot';
 import { buildDataset, type BuiltDataset } from '@/lib/dataset';
 
 const DEFAULT_PROFILE: ApiProfile = {
@@ -34,14 +32,6 @@ export default function RunnerPage() {
   const [response, setResponse] = useState<ProxyResponse | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [dryRun, setDryRun] = useState(true);
-
-  // Upsert simulator state
-  const [externalJson, setExternalJson] = useState<string>('');
-  const [emailPath, setEmailPath] = useState<string>('email');
-  const [firstNamePath, setFirstNamePath] = useState<string>('firstName');
-  const [lastNamePath, setLastNamePath] = useState<string>('lastName');
-  const [extIdPath, setExtIdPath] = useState<string>('id');
-  const [upsertPlan, setUpsertPlan] = useState<UpsertPlan | undefined>(undefined);
 
   // Dataset builder state
   const [arrayPath, setArrayPath] = useState<string>('results');
@@ -108,36 +98,6 @@ export default function RunnerPage() {
     URL.revokeObjectURL(url);
   }, [profile]);
 
-  const planUpsert = useCallback(async () => {
-    try {
-      const ext = JSON.parse(externalJson || '{}');
-      const rules: MappingRule[] = [
-        { from: emailPath, to: 'email' },
-        { from: firstNamePath, to: 'firstname' },
-        { from: lastNamePath, to: 'lastname' },
-      ];
-      if (extIdPath) rules.push({ from: extIdPath, to: 'ext_id' });
-      const properties = mapExternalToHubspot(rules, ext);
-      const base: ApiProfile = { ...profile, method: 'POST', path: '' };
-      const plan = await planUpsertContactByEmail(base, properties);
-      setUpsertPlan(plan);
-    } catch (e) {
-      alert('Invalid external JSON');
-    }
-  }, [externalJson, emailPath, firstNamePath, lastNamePath, extIdPath, profile]);
-
-  const executeUpsert = useCallback(async () => {
-    if (!upsertPlan) return;
-    const base: ApiProfile = { ...profile, method: 'POST', path: '' };
-    setLoading(true);
-    try {
-      const res = await executeUpsertContactByEmail(base, upsertPlan, dryRun);
-      setResponse(res);
-    } finally {
-      setLoading(false);
-    }
-  }, [upsertPlan, profile, dryRun]);
-
   // Dataset builder actions
   const buildDatasetAction = useCallback(async () => {
     const listProfile = profile; // reuse current profile as list request
@@ -182,13 +142,6 @@ export default function RunnerPage() {
       /* noop */
     }
   }, []);
-
-  const injectRowToUpsert = useCallback((idx: number) => {
-    if (!dataset) return;
-    const row = dataset.rows[idx];
-    setExternalJson(JSON.stringify(row, null, 2));
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [dataset]);
 
   return (
     <main className="max-w-6xl mx-auto p-6 space-y-6">
@@ -254,7 +207,6 @@ export default function RunnerPage() {
                     <div key={i} className="border rounded p-2">
                       <div className="flex items-center justify-between mb-2">
                         <div className="text-xs text-gray-500">Row {i}</div>
-                        <button className="btn" onClick={() => injectRowToUpsert(i)}>Use in Upsert</button>
                       </div>
                       <pre className="text-xs whitespace-pre-wrap">{JSON.stringify(r, null, 2)}</pre>
                     </div>
@@ -263,30 +215,9 @@ export default function RunnerPage() {
               </div>
             )}
           </div>
-
-          <div className="mt-6 p-4 border rounded space-y-3">
-            <div className="font-medium">HubSpot Upsert Simulator (Contact by Email)</div>
-            <textarea className="input min-h-[120px] font-mono" placeholder='{"email":"a@b.com","firstName":"Ada","lastName":"Lovelace","id":"ext-1"}' value={externalJson} onChange={(e) => setExternalJson(e.target.value)} />
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              <input className="input" placeholder="Path to email (e.g. email)" value={emailPath} onChange={(e) => setEmailPath(e.target.value)} />
-              <input className="input" placeholder="Path to first name (e.g. firstName)" value={firstNamePath} onChange={(e) => setFirstNamePath(e.target.value)} />
-              <input className="input" placeholder="Path to last name (e.g. lastName)" value={lastNamePath} onChange={(e) => setLastNamePath(e.target.value)} />
-              <input className="input" placeholder="Path to external id (optional, e.g. id)" value={extIdPath} onChange={(e) => setExtIdPath(e.target.value)} />
-            </div>
-            <div className="flex gap-2">
-              <button className="btn" onClick={planUpsert}>Plan Upsert</button>
-              <button className="btn-primary" onClick={executeUpsert} disabled={!upsertPlan || loading}>{loading ? 'Läuft…' : 'Execute Upsert'}</button>
-            </div>
-          </div>
         </div>
         <div>
           <ResponseViewer response={response} />
-          {upsertPlan && (
-            <div className="mt-4 border rounded">
-              <div className="p-2 border-b text-sm bg-gray-50">Upsert Plan</div>
-              <pre className="p-3 text-sm whitespace-pre-wrap">{JSON.stringify(upsertPlan, null, 2)}</pre>
-            </div>
-          )}
         </div>
       </section>
     </main>

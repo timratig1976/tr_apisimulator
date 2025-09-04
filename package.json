@@ -4,8 +4,18 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
+    "predev": "sh -c 'PORT=${PORT:-3000}; ./scripts/kill-port.sh \"$PORT\"'",
     "build": "next build --turbopack",
+    "prestart": "sh -c 'PORT=${PORT:-3000}; ./scripts/kill-port.sh \"$PORT\"'",
     "start": "next start",
+    "kill-port": "bash ./scripts/kill-port.sh",
+    "kill-port:force": "bash ./scripts/kill-port.sh --force",
+    "dev:3000": "bash ./scripts/kill-port.sh 3000 && PORT=3000 next dev --turbopack",
+    "dev:3001": "bash ./scripts/kill-port.sh 3001 && PORT=3001 next dev --turbopack",
+    "dev:3002": "bash ./scripts/kill-port.sh 3002 && PORT=3002 next dev --turbopack",
+    "start:3000": "bash ./scripts/kill-port.sh 3000 && PORT=3000 next start",
+    "start:3001": "bash ./scripts/kill-port.sh 3001 && PORT=3001 next start",
+    "start:3002": "bash ./scripts/kill-port.sh 3002 && PORT=3002 next start",
     "lint": "eslint"
   },
   "dependencies": {
